@@ -146,6 +146,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 
 #include <cstdarg>
 #include <intrin.h>
@@ -342,22 +343,26 @@ int* CtxField(void* context, int offset) {
     return reinterpret_cast<int*>(static_cast<char*>(context) + offset);
 }
 
-// The renderer is loaded under GTA2's own Direct3D name, with its own as a
-// fallback for an install that has not claimed that slot.
+// The renderer can be loaded under any name - GTA2's own d3ddll.dll, its own
+// gta2dx9.dll, or whatever a launcher gave it (ReRun uses gta2dx9-rerun.dll) - so
+// it is found by its export rather than by its file name.
 void NoteScreenClear() {
     using Notify = void(__stdcall*)();
     static Notify notify = nullptr;
     static bool tried = false;
     if (!tried) {
         tried = true;
-        static const char* const kNames[2] = {"d3ddll.dll", "gta2dx9.dll"};
-        for (int i = 0; i < 2; ++i) {
-            const HMODULE module = GetModuleHandleA(kNames[i]);
-            if (!module) continue;
-            notify = reinterpret_cast<Notify>(GetProcAddress(module, "gta2dx9_NoteScreenClear"));
-            if (notify) {
-                Log("screen clears will be reported to %s", kNames[i]);
-                break;
+        HMODULE modules[512];
+        DWORD needed = 0;
+        if (K32EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed)) {
+            const DWORD count = needed / sizeof(HMODULE) < 512 ? needed / sizeof(HMODULE) : 512;
+            for (DWORD i = 0; i < count && !notify; ++i) {
+                notify = reinterpret_cast<Notify>(GetProcAddress(modules[i], "gta2dx9_NoteScreenClear"));
+                if (notify) {
+                    char name[MAX_PATH] = "";
+                    GetModuleFileNameA(modules[i], name, sizeof(name));
+                    Log("screen clears will be reported to %s", name);
+                }
             }
         }
         if (!notify) Log("no renderer to report screen clears to; the 2D layer will not be cleared");
