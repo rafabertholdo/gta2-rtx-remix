@@ -746,6 +746,9 @@ __declspec(dllexport) void __stdcall gbh_SetAmbient(float ambient) {
         return;
     }
     gta2dx9::LightsSetAmbient(ambient);
+    if (reinterpret_cast<uintptr_t>(_ReturnAddress()) == game::kWorldAmbientReturn) {
+        gta2dx9::LightsSetWorldAmbient(ambient);
+    }
 }
 
 // Floats, not ints. The game's only call site builds them with fild/fstp at

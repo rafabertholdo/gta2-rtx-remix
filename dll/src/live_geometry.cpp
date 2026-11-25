@@ -11,6 +11,7 @@
 #include "gibs.h"
 #include "log.h"
 #include "overlay.h"
+#include "raster_lighting.h"
 #include "texture_store.h"
 
 namespace gta2dx9 {
@@ -1083,6 +1084,8 @@ void LiveGeometry::Draw(IDirect3DDevice9* device, const gta2::Camera& camera, in
     device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
     device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    bool lit = RasterLightingActive();
+    if (lit) RasterLightingSetSpriteStage(device);
     device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
@@ -1121,27 +1124,50 @@ void LiveGeometry::Draw(IDirect3DDevice9* device, const gta2::Camera& camera, in
         (effect ? effects : plain).push_back({&sprite, texture});
     }
 
-    // Two triangles from four corners, the same two every time. Indexed rather
-    // than a six-vertex list so the index buffer is part of the topological hash
-    // Remix buckets on, and so the quad really is four vertices rather than four
-    // with two duplicated.
-    static const uint16_t kQuadIndices[6] = {0, 1, 2, 0, 2, 3};
+    // Every drawable's four corners, in the order they are issued: plain, then
+    // effects. Each draw then names its own four by base vertex.
+    // Without them nothing is drawn, but the state cleanup below still runs.
+    const UINT vertexCount = static_cast<UINT>((plain.size() + effects.size()) * 4);
+    void* corners = nullptr;
+    const bool ready = vertexCount > 0 && EnsureBuffers(device, vertexCount)
+                       && SUCCEEDED(vertexBuffer_->Lock(0, vertexCount * sizeof(Vertex), &corners, D3DLOCK_DISCARD));
+    if (ready) {
+        Vertex* out = static_cast<Vertex*>(corners);
+        for (const auto* list : {&plain, &effects}) {
+            for (const Drawable& d : *list) {
+                memcpy(out, d.sprite->local, 4 * sizeof(Vertex));
+                out += 4;
+            }
+        }
+    }
+    if (ready) {
+        vertexBuffer_->Unlock();
+        device->SetStreamSource(0, vertexBuffer_, 0, sizeof(Vertex));
+        device->SetIndices(indexBuffer_);
+    }
+    UINT baseVertex = 0;
 
     // The device is a state machine and the texture rarely changes between
     // neighbouring sprites, so the redundant SetTexture calls are skipped. The
     // world matrix genuinely changes every time and cannot be.
     IDirect3DTexture9* bound = nullptr;
     auto issue = [&](const std::vector<Drawable>& list) {
+        if (!ready) return;
         for (const Drawable& d : list) {
             D3DMATRIX world;
             memcpy(&world, d.sprite->objectToWorld.m, sizeof(world));
             device->SetTransform(D3DTS_WORLD, &world);
+            if (lit) {
+                // Row-major, D3D convention: the translation is the last row.
+                const auto& m = d.sprite->objectToWorld.m;
+                device->SetRenderState(D3DRS_TEXTUREFACTOR, RasterLightingColourAt(m[3][0], m[3][1], m[3][2]));
+            }
             if (d.texture != bound) {
                 device->SetTexture(0, d.texture);
                 bound = d.texture;
             }
-            device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, 4, 2, kQuadIndices,
-                                           D3DFMT_INDEX16, d.sprite->local, sizeof(Vertex));
+            device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, static_cast<INT>(baseVertex), 0, 4, 0, 2);
+            baseVertex += 4;
             ++drops_.drawn;
         }
     };
@@ -1164,7 +1190,12 @@ void LiveGeometry::Draw(IDirect3DDevice9* device, const gta2::Camera& camera, in
         // Still depth *tested*, so a fire behind a wall stays behind it, but not
         // depth written: a glow must not stop what is drawn after it.
         device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        // Fire and explosions are light, not lit.
+        if (lit) device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        const bool litPlain = lit;
+        lit = false;
         issue(effects);
+        lit = litPlain;
         device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
         device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
         device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
@@ -1173,6 +1204,8 @@ void LiveGeometry::Draw(IDirect3DDevice9* device, const gta2::Camera& camera, in
     g_effectBatches = effectQuads_;
 
     device->SetTexture(0, nullptr);
+    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_CURRENT);
     device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
     // Left as we found it, so the next pass that assumes a world matrix - and the
@@ -1182,7 +1215,51 @@ void LiveGeometry::Draw(IDirect3DDevice9* device, const gta2::Camera& camera, in
     device->SetTransform(D3DTS_WORLD, &matrix);
 }
 
+// Two triangles from four corners, the same two every time. Indexed rather than
+// a six-vertex list so the index buffer is part of the topological hash Remix
+// buckets on, and so the quad really is four vertices rather than four with two
+// duplicated. The vertex buffer grows to the busiest frame and is refilled with
+// DISCARD, which hands wined3d a fresh one instead of waiting for the GPU.
+bool LiveGeometry::EnsureBuffers(IDirect3DDevice9* device, UINT vertices) {
+    if (device != bufferDevice_) ReleaseBuffers();
+    if (!indexBuffer_) {
+        if (FAILED(device->CreateIndexBuffer(6 * sizeof(uint16_t), D3DUSAGE_WRITEONLY, D3DFMT_INDEX16,
+                                             D3DPOOL_MANAGED, &indexBuffer_, nullptr))) {
+            return false;
+        }
+        static const uint16_t kQuadIndices[6] = {0, 1, 2, 0, 2, 3};
+        void* data = nullptr;
+        if (FAILED(indexBuffer_->Lock(0, 0, &data, 0))) return false;
+        memcpy(data, kQuadIndices, sizeof(kQuadIndices));
+        indexBuffer_->Unlock();
+    }
+    if (vertices > vertexCapacity_) {
+        if (vertexBuffer_) vertexBuffer_->Release();
+        vertexBuffer_ = nullptr;
+        UINT capacity = 1024;
+        while (capacity < vertices) capacity *= 2;
+        if (FAILED(device->CreateVertexBuffer(capacity * sizeof(Vertex), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                              0, D3DPOOL_DEFAULT, &vertexBuffer_, nullptr))) {
+            vertexCapacity_ = 0;
+            return false;
+        }
+        vertexCapacity_ = capacity;
+    }
+    bufferDevice_ = device;
+    return true;
+}
+
+void LiveGeometry::ReleaseBuffers() {
+    if (vertexBuffer_) vertexBuffer_->Release();
+    if (indexBuffer_) indexBuffer_->Release();
+    vertexBuffer_ = nullptr;
+    indexBuffer_ = nullptr;
+    bufferDevice_ = nullptr;
+    vertexCapacity_ = 0;
+}
+
 void LiveGeometry::ReleaseResources() {
+    ReleaseBuffers();
     sprites_.clear();
     ReleaseLampTextures();
     g_lampDevice = nullptr;

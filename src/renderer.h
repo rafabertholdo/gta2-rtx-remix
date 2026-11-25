@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "dynamic_vertices.h"
 #include "gta2_style.h"
 #include "world_mesh.h"
 
@@ -109,6 +110,9 @@ public:
     void CycleCullMode();
     const RenderStats& Stats() const { return stats_; }
     IDirect3DDevice9* Device() const { return device_; }
+    // Draws the world lit with whatever lights and ambient the device holds,
+    // the texture modulated by the lit colour, instead of the texture alone.
+    void SetLit(bool lit) { lit_ = lit; }
 
 private:
     void ApplyFixedFunctionState();
@@ -135,6 +139,9 @@ private:
     int height_ = 0;
     int deviceAttempts_ = 0;  // Initialize is retried until the device takes
     bool wireframe_ = false;
+    bool lit_ = false;
+    // The composite quad, which used to be a DrawPrimitiveUP.
+    DynamicVertices compositeStream_;
     DWORD cullMode_ = D3DCULL_CCW;
     RenderStats stats_;
 };

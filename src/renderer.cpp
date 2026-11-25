@@ -1,5 +1,7 @@
 #include "renderer.h"
 
+#include "hd_tiles.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -133,6 +135,7 @@ void Renderer::Shutdown() {
 }
 
 void Renderer::ReleaseResources() {
+    compositeStream_.Release();
     // An animated tile's slot points at a frame owned by tileFrames_, so those
     // must not be released twice. Everything else in textures_ is owned here.
     for (IDirect3DTexture9* texture : textures_) {
@@ -328,6 +331,12 @@ bool Renderer::UploadWorld(const WorldMesh& mesh, const Style& style, std::strin
             }
         } else {
             const Tile& tile = style.GetTile(batch.tile);
+            if (IDirect3DTexture9* hd = LoadHdTile(device_, TileHash(tile.pixels.data()))) {
+                texture->UnlockRect(0);
+                texture->Release();
+                textures_[batch.tile] = hd;
+                continue;
+            }
             for (int y = 0; y < kTileSize; ++y) {
                 memcpy(static_cast<uint8_t*>(rect.pBits) + y * rect.Pitch,
                        &tile.pixels[static_cast<size_t>(y) * kTileSize], kTileSize * 4);
@@ -352,15 +361,16 @@ void Renderer::UpdateTileTexture(int tile, const uint32_t* pixels) {
     // it instead. A frame that comes round again resolves to the same object and
     // therefore the same hash, so the cost is bounded by how much distinct
     // artwork exists rather than by how long the game runs.
-    uint64_t key = 0xCBF29CE484222325ULL;
-    for (size_t i = 0; i < static_cast<size_t>(kTileSize) * kTileSize; ++i) {
-        key ^= pixels[i];
-        key *= 0x100000001B3ULL;
-    }
+    const uint64_t key = TileHash(pixels);
 
     const auto existing = tileFrames_.find(key);
     if (existing != tileFrames_.end()) {
         textures_[tile] = existing->second;
+        return;
+    }
+    if (IDirect3DTexture9* hd = LoadHdTile(device_, key)) {
+        tileFrames_[key] = hd;
+        textures_[tile] = hd;
         return;
     }
 
@@ -404,11 +414,17 @@ void Renderer::ApplyFixedFunctionState() {
     device_->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    if (lit_) {
+        device_->SetRenderState(D3DRS_LIGHTING, TRUE);
+        device_->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        device_->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    }
 
     device_->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     device_->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
     device_->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
     device_->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    device_->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
 }
 
 void Renderer::MarkDrawsAsScreenUi() {
@@ -526,7 +542,7 @@ void Renderer::EndUiLayer() {
     device_->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
     device_->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     device_->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
-    device_->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(Composite));
+    compositeStream_.Draw(device_, D3DPT_TRIANGLEFAN, 2, quad, 4, sizeof(Composite));
 
     device_->SetTexture(0, nullptr);
     device_->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);

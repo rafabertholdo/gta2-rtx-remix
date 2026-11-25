@@ -806,13 +806,16 @@ int  g_probeWaitFrames = 0;
 
 bool ReadDword(const uint8_t* base, int offset, uint32_t* out) {
     // The tail of the window runs off the end of a smaller structure, and there
-    // is no length to check it against. Lean on the page fault.
-    __try {
-        *out = *reinterpret_cast<const uint32_t*>(base + offset);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    // is no length to check it against. Ask whether the page is readable rather
+    // than leaning on the page fault: clang only guards calls inside __try, not
+    // plain loads, so under it the fault went uncaught and killed the game.
+    const uint8_t* at = base + offset;
+    MEMORY_BASIC_INFORMATION info;
+    if (!VirtualQuery(at, &info, sizeof(info)) || info.State != MEM_COMMIT) return false;
+    if (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    if (at + sizeof(uint32_t) > static_cast<const uint8_t*>(info.BaseAddress) + info.RegionSize) return false;
+    *out = *reinterpret_cast<const uint32_t*>(at);
+    return true;
 }
 
 struct Snapshot {

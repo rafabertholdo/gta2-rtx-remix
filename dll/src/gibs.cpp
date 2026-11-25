@@ -144,16 +144,16 @@ void EndParticle(uint8_t* p) {
 
 // A dword out of game memory that may since have been freed: the ped a hidden
 // body belongs to is only ours to read while the game keeps it, and a ped the
-// game has let go of can take its page with it. Structured exception handling
-// rather than a guess at which pointers are still good, because nothing here
-// can tell.
+// game has let go of can take its page with it. Asks whether the page is still
+// readable rather than catching the fault: clang only guards calls inside
+// __try, not plain loads, so under it the fault went uncaught and killed the game.
 bool ReadGameDword(const uint8_t* at, uint32_t* out) {
-    __try {
-        *out = *reinterpret_cast<const volatile uint32_t*>(at);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    MEMORY_BASIC_INFORMATION info;
+    if (!VirtualQuery(at, &info, sizeof(info)) || info.State != MEM_COMMIT) return false;
+    if (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    if (at + sizeof(uint32_t) > static_cast<const uint8_t*>(info.BaseAddress) + info.RegionSize) return false;
+    *out = *reinterpret_cast<const volatile uint32_t*>(at);
+    return true;
 }
 
 // Ends every limb, in the air or on the ground, that came off this ped.

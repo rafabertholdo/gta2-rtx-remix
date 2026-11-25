@@ -277,6 +277,15 @@ void LightsDraw();
 
 const std::vector<RemixTrackedLight>& LightsTracked();
 float LightsAmbient();
+// The ambient the game set for its world pass (gta2.exe!0x00472132). The game
+// sets another, 1.0, for the HUD straight after in the same frame, so
+// LightsAmbient read after the frame is always daylight. False until the world
+// pass has set one.
+void LightsSetWorldAmbient(float ambient);
+float LightsWorldAmbient();
+bool LightsWorldAmbientKnown();
+// This frame's lights as the game listed them, in world-mesh coordinates.
+const std::vector<RemixLightDesc>& LightsPending();
 const char* LightsScene();
 
 RemixLightOverride* LightsFindOverride(uint64_t key);

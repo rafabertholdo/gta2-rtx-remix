@@ -109,6 +109,8 @@ uint32_t g_framesSinceCollect = 0;
 bool     g_collecting = false;
 
 float    g_ambient = 0.0f;
+float    g_worldAmbient = 1.0f;
+bool     g_worldAmbientKnown = false;
 uint64_t g_identify = 0;
 uint64_t g_nextId = 1;
 uint64_t g_sceneSalt = 0;
@@ -463,6 +465,16 @@ void LightsSetMapLights(const std::vector<uint16_t>& xyz) {
     }
     g_reliftPending = true;
 }
+
+void LightsSetWorldAmbient(float ambient) {
+    g_worldAmbient = ambient;
+    g_worldAmbientKnown = true;
+}
+
+float LightsWorldAmbient() { return g_worldAmbient; }
+bool LightsWorldAmbientKnown() { return g_worldAmbientKnown; }
+
+const std::vector<RemixLightDesc>& LightsPending() { return g_pending; }
 
 void LightsBeginExtra() { g_extra.clear(); }
 

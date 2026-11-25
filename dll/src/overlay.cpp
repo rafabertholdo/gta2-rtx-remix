@@ -934,7 +934,8 @@ void Overlay::Flush(IDirect3DDevice9* device, int targetWidth, int targetHeight)
             vertex.u *= invU;
             vertex.v *= invV;
         }
-        device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, draw.count / 3, batch.data(), sizeof(Vertex));
+        vertexStream_.Draw(device, D3DPT_TRIANGLELIST, draw.count / 3, batch.data(),
+                           static_cast<UINT>(batch.size()), sizeof(Vertex));
     }
 
     // One line per frame whose draw list is not identical to the last, which is
@@ -1042,6 +1043,7 @@ void Overlay::ReleaseResources() {
         image.texture = nullptr;
     }
     EndMovie();
+    vertexStream_.Release();
     vertices_.clear();
     draws_.clear();
 }

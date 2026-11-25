@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "plugin_draw.h"
+#include "../../src/dynamic_vertices.h"
 
 namespace gta2dx9 {
 
@@ -158,6 +159,8 @@ private:
     static uint32_t PanelColour(uint32_t colour);
 
     std::vector<Vertex> vertices_;
+    // Where each draw's vertices go instead of DrawPrimitiveUP.
+    gta2::DynamicVertices vertexStream_;
     std::vector<Draw> draws_;
     std::vector<Image> images_;
     std::vector<Image> pluginImages_;   // see CreatePluginImage; empty pixels = free

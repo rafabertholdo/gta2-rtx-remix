@@ -18,6 +18,8 @@
 #include "log.h"
 #include "remix_api.h"
 #include "remix_lights.h"
+#include "raster_lighting.h"
+#include "../../src/hd_tiles.h"
 #include "synthetic_lights.h"
 #include "texture_store.h"
 #include "time_of_day.h"
@@ -946,6 +948,11 @@ bool WorldView::EnsureWorldLoaded() {
     Log("world loaded: %s, %zu blocks, %zu triangles, %zu batches, floor %s", stylePath.c_str(),
         map_.BlockCount(), mesh.indices.size() / 3, mesh.batches.size(),
         gta2::WorldSeal() ? "sealed" : "OPEN (the sky shows through any gap)");
+    {
+        int hits = 0, misses = 0;
+        gta2::HdTileStats(&hits, &misses);
+        Log("hd tiles: %d replaced, %d without a replacement", hits, misses);
+    }
     loadedMapObject_ = mapObject;
     worldUploaded_ = true;
     return true;
@@ -1161,16 +1168,23 @@ void WorldView::RenderFrame() {
     DebugMenuInit(gameWindow_, window_, renderer_.Device());
     DebugMenuPoll();
 
-    // The sky. Runs whether or not Remix answered - the clock is ours and the
-    // menu shows it either way - and pushes the sun when it can.
-    TimeOfDayUpdate();
+    // Everything below this until the draw feeds RTX Remix's lights and sky, and
+    // is skipped without Remix (ReRun on a Mac): it walks the game's vehicle and
+    // particle lists and probes its memory every dusk frame for nothing, and
+    // dusk play froze with it running. The game's own light list still arrives
+    // through gbh_AddLight for raster_lighting.
+    const bool remix = RemixApiAvailable();
+    if (remix) {
+        // The sky. Pushes the sun when Remix answers.
+        TimeOfDayUpdate();
 
-    // Lights for the effects the game draws but never lights, read straight off
-    // its particle and vehicle lists. Before the reconcile, so they are matched
-    // and handled in the same pass as the game's own.
-    SyntheticLightsUpdate();
-    // The light benchmark's own lights, when one is running. See light_bench.h.
-    LightBenchSubmit();
+        // Lights for the effects the game draws but never lights, read straight
+        // off its particle and vehicle lists. Before the reconcile, so they are
+        // matched and handled in the same pass as the game's own.
+        SyntheticLightsUpdate();
+        // The light benchmark's own lights, when one is running. See light_bench.h.
+        LightBenchSubmit();
+    }
 
     // The game lists this frame's lights during its own world pass, which runs
     // between gbh_BeginScene and the gbh_EndScene that brought us here - so by
@@ -1178,10 +1192,12 @@ void WorldView::RenderFrame() {
     // Timed, for the benchmark: this is where every CreateLight crosses the bridge.
     LARGE_INTEGER lightTimer[4] = {};
     QueryPerformanceCounter(&lightTimer[0]);
-    LightsReconcile();
+    if (remix) LightsReconcile();
     QueryPerformanceCounter(&lightTimer[1]);
 
     if (renderer_.BeginFrame()) {
+        // GTA2's dusk and lamps, when nothing else will light the world.
+        renderer_.SetLit(RasterLightingApply(renderer_.Device(), camera_.Position().x, camera_.Position().z));
         renderer_.DrawWorld(camera_);
         // Sprites and the captured block shapes are real world geometry, so they
         // are depth tested against the static mesh rather than painted over it.
@@ -1205,7 +1221,7 @@ void WorldView::RenderFrame() {
         // Remix clears its per-frame light list every frame, so a light is in the
         // scene exactly when it is drawn here. Last thing before the flip.
         QueryPerformanceCounter(&lightTimer[2]);
-        LightsDraw();
+        if (remix) LightsDraw();
         QueryPerformanceCounter(&lightTimer[3]);
         renderer_.EndFrame();
     }

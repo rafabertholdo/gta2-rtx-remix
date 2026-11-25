@@ -327,6 +327,16 @@ private:
     // lamp quad can be laid on its body.
     const void* lastObject_ = nullptr;
     size_t lastSprite_ = 0;
+    // The frame's sprite corners, drawn from buffers the renderer owns rather
+    // than with DrawIndexedPrimitiveUP: wined3d streams UP data through a ring
+    // that waits on a GPU fence when it wraps, and under Wine on a Mac that wait
+    // span forever a few minutes into play. See EnsureBuffers.
+    IDirect3DVertexBuffer9* vertexBuffer_ = nullptr;
+    IDirect3DIndexBuffer9* indexBuffer_ = nullptr;
+    IDirect3DDevice9* bufferDevice_ = nullptr;
+    UINT vertexCapacity_ = 0;
+    bool EnsureBuffers(IDirect3DDevice9* device, UINT vertices);
+    void ReleaseBuffers();
     int spriteQuads_ = 0;
     int effectQuads_ = 0;
     int spriteLogs_ = 0;

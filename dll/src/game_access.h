@@ -48,6 +48,12 @@ constexpr uintptr_t kVerticalScaleOffset = 0x94;
 // broken.
 constexpr uintptr_t kLightingEnabledFlag = 0x00595011;
 
+// Where gbh_SetAmbient returns to when the world pass sets its ambient
+// (FUN_00472110, the call at 0x00472132). The game calls it again with 1.0 for
+// the HUD in the same frame (0x004C6DAE), so only this caller carries the
+// level's dusk or night.
+constexpr uintptr_t kWorldAmbientReturn = 0x00472138;
+
 inline bool LightingEnabled() {
     return *reinterpret_cast<const uint8_t*>(kLightingEnabledFlag) != 0;
 }
